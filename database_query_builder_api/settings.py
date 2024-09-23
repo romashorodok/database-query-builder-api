@@ -31,6 +31,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    "internal.api",
     # "django.contrib.admin",
     # "django.contrib.auth",
     # "django.contrib.contenttypes",
@@ -40,9 +41,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "django.middleware.common.CommonMiddleware",
     # "django.middleware.security.SecurityMiddleware",
     # "django.contrib.sessions.middleware.SessionMiddleware",
-    # "django.middleware.common.CommonMiddleware",
     # "django.middleware.csrf.CsrfViewMiddleware",
     # "django.contrib.auth.middleware.AuthenticationMiddleware",
     # "django.contrib.messages.middleware.MessageMiddleware",
