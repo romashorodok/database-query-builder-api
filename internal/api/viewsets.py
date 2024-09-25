@@ -313,6 +313,7 @@ class DatabaseScanner:
 
                 if is_relation:
                     ref_db_column, ref_db_table = relations[column_name]
+
                     if extra_params.pop("unique", False) or extra_params.get(
                         "primary_key"
                     ):
@@ -324,11 +325,13 @@ class DatabaseScanner:
                         )
                         if ref_pk_column and ref_pk_column != ref_db_column:
                             extra_params["to_field"] = ref_db_column
+
                     rel_to = (
                         "self"
                         if ref_db_table == table
                         else normalize_table_name(ref_db_table)
                     )
+
                     if rel_to in known_models:
                         field_type = "%s(%s" % (rel_type, rel_to)
                     else:
@@ -348,12 +351,25 @@ class DatabaseScanner:
                         ref_db_table,
                         "ref on",
                         ref_db_column,
-                        "local_column",
-                        column_name,
+                        # "local_column",
+                        # column_name,
                         "rel",
                         rel_type,
                         rel_to,
                     )
+                    print("relation", extra_params)
+                    field = FIELD_MAPPING_CLASS.get(rel_type)
+                    if not field:
+                        continue
+
+                    # print("from", column_name, "rel to", rel_to)
+                    options = {"to": rel_to, "db_column": column_name}
+
+                    fields[column_name] = field(on_delete=models.DO_NOTHING, **options)
+
+                    # models.ForeignKey()
+                    # print(field)
+                    continue
                     # TODO: add foregin key type
 
                 else:
