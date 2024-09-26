@@ -177,20 +177,27 @@ class QueryForeginModel:
         self.__field = field_cls
         self.__rel_to = rel_to
         self.__options: dict[str, Any] = {
-            "to": rel_to,
+            # "to": rel_to,
             "db_column": db_column,
             "to_field": ref_db_column,
         }
+
+        self.serializer: type[ModelSerializer] | None = None
 
     @property
     def rel_to(self) -> str:
         return self.__rel_to
 
-    def make_field(self) -> models.ForeignKey:
-        return self.__field(on_delete=models.DO_NOTHING, **self.__options)
+    def make_field(self) -> models.ForeignKey | None:
+        if self.__options.get("to"):
+            return self.__field(on_delete=models.DO_NOTHING, **self.__options)
+        return None
 
     def update_foregin_model(self, query_model: type[models.Model]):
         self.__options["to"] = query_model
+
+    def update_foregin_model_serializer(self, serializer: type[ModelSerializer]):
+        self.serializer = serializer
 
 
 class QueryModel:
@@ -200,8 +207,6 @@ class QueryModel:
         table_name: str,
     ) -> None:
         self.__model_name = model_name
-        # self.__query_foregin_keys = list[QueryForeginKey]()
-        # self.__model_field_names = set[str]()
         self._table_name = table_name
 
         self.__query_foregin_model = dict[str, QueryForeginModel]()
@@ -227,6 +232,7 @@ class QueryModel:
 
     def __get_fields(self) -> dict[str, Any]:
         fields = {}
+
         for (
             primitive_field_name,
             primitive_field,
@@ -234,9 +240,23 @@ class QueryModel:
             fields[primitive_field_name] = primitive_field.make_field()
 
         for foregin_field_name, foregin_field in self.__query_foregin_model.items():
-            fields[foregin_field_name] = foregin_field.make_field()
+            if (field := foregin_field.make_field()) and field:
+                fields[foregin_field_name] = field
 
         return fields
+
+    def __get_serializer_fields(self) -> tuple[list[str], dict[str, Any]]:
+        fields_to_serialize = list(self.__query_primitive_model.keys())
+        serializer_fields = {}
+
+        for foregin_field_name, foregin_field in self.__query_foregin_model.items():
+            serializer = foregin_field.serializer
+            if serializer:
+                serializer_fields[foregin_field_name] = serializer()
+                fields_to_serialize.append(foregin_field_name)
+                print(f"serializer of {foregin_field_name}", serializer)
+
+        return (fields_to_serialize, serializer_fields)
 
     def get_django_model(self) -> type[models.Model]:
         fields = self.__get_fields()
@@ -249,33 +269,22 @@ class QueryModel:
 
         fields["Meta"] = Meta
 
-        for (
-            primitive_field_name,
-            primitive_field,
-        ) in self.__query_primitive_model.items():
-            fields[primitive_field_name] = primitive_field.make_field()
-
-        for foregin_field_name, foregin_field in self.__query_foregin_model.items():
-            fields[foregin_field_name] = foregin_field.make_field()
-
         return type(self.__model_name, (models.Model,), fields)
 
     def get_drf_serializer(
         self, model_cls: type[models.Model]
     ) -> type[ModelSerializer]:
-        fields = self.__get_fields()
-        field_names = list(map(lambda f: f[0], fields.items()))
+        serializer_field_names, serializer_fields = self.__get_serializer_fields()
 
         class Meta:
             model = model_cls
-            fields = field_names
+            fields = serializer_field_names
 
-        serializer_fields = {}
         serializer_fields["__module__"] = ""
         serializer_fields["Meta"] = Meta
 
         return type(
-            f"{str(model_cls)}Serializer",
+            f"{self.__model_name}Serializer",
             (ModelSerializer,),
             serializer_fields,
         )
@@ -350,29 +359,20 @@ class DatabaseScanner:
             if c["unique"] and len(c["columns"]) == 1
         ]
 
-    def __create_drf_serializer_cls(
-        self, model_cls: type[models.Model], fields_to_serialize: list[str]
-    ) -> type[ModelSerializer]:
-        class Meta:
-            model = model_cls
-            fields = fields_to_serialize
-
-        serializer_fields = {}
-        serializer_fields["__module__"] = ""
-        serializer_fields["Meta"] = Meta
-
-        return type(
-            f"{str(model_cls)}Serializer", (ModelSerializer,), serializer_fields
-        )
-
     def link_foregin_keys(self):
         projections = self.__query_projections
+
         for _, query_model in projections.items():
             foregins = query_model.get_query_foregin_models()
+
             for _, foregin_model in foregins.items():
                 foregin_model_name = foregin_model.rel_to
                 if (model := projections.get(foregin_model_name)) and model:
-                    foregin_model.update_foregin_model(model.get_django_model())
+                    django_model = model.get_django_model()
+                    foregin_model.update_foregin_model(django_model)
+                    foregin_model.update_foregin_model_serializer(
+                        model.get_drf_serializer(django_model)
+                    )
 
     def scan_all_tables(self):
         types = {
@@ -396,10 +396,9 @@ class DatabaseScanner:
             # Maps column names to names of model fields
             column_to_field_name = {}
             # Holds foreign relations used in the table.
-            used_relations = set()
+            # used_relations = set()
 
             known_models = [model_name]
-            fields: dict[str, Any] = {}
 
             for row in self.__db.introspection.get_table_description(
                 self.__cursor,
@@ -452,111 +451,54 @@ class DatabaseScanner:
                     else:
                         field_type = "%s('%s'" % (rel_type, rel_to)
 
-                    if rel_to in used_relations:
-                        extra_params["related_name"] = "%s_%s_set" % (
-                            model_name.lower(),
-                            att_name,
-                        )
+                    # if rel_to in used_relations:
+                    #     extra_params["related_name"] = "%s_%s_set" % (
+                    #         model_name.lower(),
+                    #         att_name,
+                    #     )
 
-                    used_relations.add(rel_to)
-                    print(
-                        "relation",
-                        rel_to,
-                        "ref table",
-                        ref_db_table,
-                        "ref on",
-                        ref_db_column,
-                        # "local_column",
-                        # column_name,
-                        "rel",
-                        rel_type,
-                        rel_to,
-                    )
-                    print("relation", extra_params)
-                    # field = FIELD_MAPPING_CLASS.get(rel_type)
-                    # if not field or not issubclass(field, models.ForeignKey):
-                    #     continue
+                    # used_relations.add(rel_to)
 
-                    query_foregin = QueryForeginModel(
-                        rel_type,
-                        rel_to,
-                        column_name,
-                        ref_db_column,
-                    )
-                    query_model.add_query_foregin_model(column_name, query_foregin)
-
-                    # options = {"to": rel_to, "db_column": column_name}
-                    # _rel_name = "%s_%s_set" % (model_name.lower(), att_name)
-                    # _rel_name = att_name
-
-                    # fields[column_name] = field(
-                    #     to_field=ref_db_column,
-                    #     on_delete=models.DO_NOTHING,
-                    #     **options,
-                    # )
-                    # query_model.add_related_foregin_name(
-                    #     column_name,
-                    #     att_name,
+                    # print(
+                    #     "relation",
                     #     rel_to,
+                    #     "ref table",
                     #     ref_db_table,
+                    #     "ref on",
+                    #     ref_db_column,
+                    #     # "local_column",
+                    #     # column_name,
+                    #     "rel",
+                    #     rel_type,
+                    #     rel_to,
                     # )
+                    # print("relation", extra_params)
+
+
+                    query_model.add_query_foregin_model(
+                        att_name,
+                        QueryForeginModel(
+                            rel_type,
+                            rel_to,
+                            column_name,
+                            ref_db_column,
+                        ),
+                    )
                     continue
 
                 else:
                     field_type, field_params, _ = get_field_type(self.__db, table, row)
                     extra_params.update(field_params)
 
-                query_primitive_field_model = QueryPrimitiveFieldModel(
-                    field_type, extra_params
-                )
                 query_model.add_query_primitive_field_model(
-                    column_name, query_primitive_field_model
+                    column_name,
+                    QueryPrimitiveFieldModel(
+                        field_type,
+                        extra_params,
+                    ),
                 )
 
-                # TODO: field construct on own func
-                # field = FIELD_MAPPING_CLASS.get(field_type)
-                # if not field:
-                #     # print(
-                #     #     "Not found field mapper",
-                #     #     model_name,
-                #     #     column_name,
-                #     #     field_type,
-                #     #     extra_params,
-                #     # )
-                #     continue
-
-                # fields[column_name] = field(**extra_params)
-                # query_model.add_model_field_name(column_name)
-
-                # print(model_name, column_name, field_type, extra_params)
-
-            # print(fields)
-
-            # fields_to_serialize = list(map(lambda q: q[0], fields.items()))
-
-            # fields["__module__"] = ""
-
-            # class Meta:
-            #     db_table = table
-            #     managed = False
-            #     app_label = ""
-
-            # fields["Meta"] = Meta
-            # django_model_class: type[models.Model] = type(
-            #     model_name, (models.Model,), fields
-            # )
-
-            # django_drf_model_serializer = self.__create_drf_serializer_cls(
-            #     django_model_class, fields_to_serialize
-            # )
-
-            # self.__model_serializer_classess[model_name] = django_drf_model_serializer
-            # self.__model_classes[model_name] = django_model_class
             self.__query_projections[model_name] = query_model
-
-            # print(django_model_class)
-            # print("result of", django_model_class.objects.all())
-        pass
 
 
 class QueryViewSet(ViewSet):
@@ -620,6 +562,7 @@ class QueryViewSet(ViewSet):
                     for i in related_fields:
                         attr = getattr(r, i)
                         if attr:
+                            print("relation attr type", type(attr))
                             print("has relation attr", model_to_dict(attr))
 
                 s = drf_serializer(result, many=True)
