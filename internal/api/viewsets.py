@@ -1,6 +1,5 @@
 import re
 import keyword
-from dataclasses import dataclass
 
 from http import HTTPMethod
 from typing import Any
@@ -11,6 +10,7 @@ from django.db.backends.base.introspection import FieldInfo
 from django.db.backends.utils import CursorWrapper
 from django.db.utils import load_backend
 from django.forms import model_to_dict
+
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -289,48 +289,12 @@ class QueryModel:
             serializer_fields,
         )
 
-    #
-    # def add_related_foregin_name(
-    #     self,
-    #     foregin_key_column: str,
-    #     mapped_field_name: str,
-    #     mapped_model_name: str,
-    #     model_table_name: str,
-    # ):
-    #     self.__query_foregin_keys.append(
-    #         QueryForeginKey(
-    #             foregin_key_column,
-    #             mapped_field_name,
-    #             mapped_model_name,
-    #             model_table_name,
-    #         ),
-    #     )
-    #
-    # def add_model_field_name(self, model_field_name: str):
-    #     # self.__model_field_names.append(model_field_name)
-    #     self.__model_field_names.add(model_field_name)
-    #
-    # def get_query_foregin_key_names(self):
-    #     return self.__query_foregin_keys
-    #
-    # def get_model_field_names(self):
-    #     return self.__model_field_names
-
 
 class DatabaseScanner:
     def __init__(self, db: BaseDatabaseWrapper, cursor: CursorWrapper) -> None:
         self.__db = db
         self.__cursor = cursor
-
-        # self.__model_classes = dict[str, type[models.Model]]()
-        # self.__model_serializer_classess = dict[str, type[ModelSerializer]]()
         self.__query_projections = dict[str, QueryModel]()
-
-    # def get_models(self):
-    #     return self.__model_classes
-    #
-    # def get_model_serializer_classess(self):
-    #     return self.__model_serializer_classess
 
     def get_query_projections(self):
         return self.__query_projections
@@ -395,10 +359,6 @@ class DatabaseScanner:
             used_column_names = []
             # Maps column names to names of model fields
             column_to_field_name = {}
-            # Holds foreign relations used in the table.
-            # used_relations = set()
-
-            known_models = [model_name]
 
             for row in self.__db.introspection.get_table_description(
                 self.__cursor,
@@ -427,53 +387,12 @@ class DatabaseScanner:
 
                 if is_relation:
                     ref_db_column, ref_db_table = relations[column_name]
-
-                    if extra_params.pop("unique", False) or extra_params.get(
-                        "primary_key"
-                    ):
-                        rel_type = "OneToOneField"
-                    else:
-                        rel_type = "ForeignKey"
-                        ref_pk_column = self.__db.introspection.get_primary_key_column(
-                            self.__cursor, ref_db_table
-                        )
-                        if ref_pk_column and ref_pk_column != ref_db_column:
-                            extra_params["to_field"] = ref_db_column
-
+                    rel_type = "ForeignKey"
                     rel_to = (
                         "self"
                         if ref_db_table == table
                         else normalize_table_name(ref_db_table)
                     )
-
-                    if rel_to in known_models:
-                        field_type = "%s(%s" % (rel_type, rel_to)
-                    else:
-                        field_type = "%s('%s'" % (rel_type, rel_to)
-
-                    # if rel_to in used_relations:
-                    #     extra_params["related_name"] = "%s_%s_set" % (
-                    #         model_name.lower(),
-                    #         att_name,
-                    #     )
-
-                    # used_relations.add(rel_to)
-
-                    # print(
-                    #     "relation",
-                    #     rel_to,
-                    #     "ref table",
-                    #     ref_db_table,
-                    #     "ref on",
-                    #     ref_db_column,
-                    #     # "local_column",
-                    #     # column_name,
-                    #     "rel",
-                    #     rel_type,
-                    #     rel_to,
-                    # )
-                    # print("relation", extra_params)
-
 
                     query_model.add_query_foregin_model(
                         att_name,
@@ -486,9 +405,8 @@ class DatabaseScanner:
                     )
                     continue
 
-                else:
-                    field_type, field_params, _ = get_field_type(self.__db, table, row)
-                    extra_params.update(field_params)
+                field_type, field_params, _ = get_field_type(self.__db, table, row)
+                extra_params.update(field_params)
 
                 query_model.add_query_primitive_field_model(
                     column_name,
@@ -555,74 +473,20 @@ class QueryViewSet(ViewSet):
                 drf_serializer = query_model.get_drf_serializer(django_model)
 
                 related_fields = query_model.get_query_foregin_models_fields()
-                result = django_model.objects.select_related(*related_fields).all()
+                # result = django_model.objects.select_related(*related_fields).all()
+                result = django_model.objects.all()
 
                 for r in result:
                     print(model_to_dict(r))
                     for i in related_fields:
-                        attr = getattr(r, i)
-                        if attr:
-                            print("relation attr type", type(attr))
-                            print("has relation attr", model_to_dict(attr))
+                        if hasattr(r, i):
+                            attr = getattr(r, i)
+                            if attr:
+                                print("relation attr type", type(attr))
+                                print("has relation attr", model_to_dict(attr))
 
                 s = drf_serializer(result, many=True)
                 data.extend(s.data)
-
-                # pass
-
-            # print("Found N model serializers:", len(serializers))
-
-            # for model_name, cls in scanner.get_models().items():
-            #     serializer = serializers.get(model_name)
-            #     if not serializer:
-            #         print(f"Not found {model_name} model serializer")
-            #         continue
-            #
-            #     projection = projections.get(model_name)
-            #     if not projection:
-            #         print(f"Not found {model_name} model projection")
-            #         continue
-            #
-            #     foregin_key = projection.get_query_foregin_key_names()
-            #     print("relation", foregin_key)
-            #     foregin_key_colums = map(lambda q: q.foregin_key_column, foregin_key)
-            #
-            #     tables = list[str]()
-            #     table_select = list[str]()
-            #
-            #     # for fk in foregin_key_names:
-            #     #     mapped_projection = projections.get(fk.mapped_model_name)
-            #     #     if not mapped_projection:
-            #     #         continue
-            #     #
-            #     #     tables.append(fk.model_table_name)
-            #     #
-            #     #     names = mapped_projection.get_model_field_names()
-            #     #     for select in names:
-            #     #         table_select.append(
-            #     #             f"{projection.table_name}.{fk.foregin_key_column} = {fk.model_table_name}.{select}"
-            #     #         )
-            #     #
-            #     #     select_values = {}
-            #     #     for _select in table_select:
-            #     #         # select_values
-            #     #         pass
-            #
-            #     # print(
-            #     #     f"root {model_name} relation {fk.mapped_model_name} fields",
-            #     #     names,
-            #     # )
-            #
-            #     print(tables, table_select)
-            #
-            #     result = cls.objects.prefetch_related(*foregin_key_colums).all()
-            #
-            #     for r in result:
-            #         print(model_to_dict(r))
-            #
-            #     s = serializer(result, many=True)
-            #
-            #     data.extend(s.data)
 
         db.close()
 
