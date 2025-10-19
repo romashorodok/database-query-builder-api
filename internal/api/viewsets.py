@@ -36,6 +36,9 @@ DATABASE_ENGINES = {
 
 def normalize_table_name(table_name):
     """Translate the table name to a Python-compatible model name."""
+    if not table_name or not isinstance(table_name, str):
+        raise ValueError("Table name must be a non-empty string")
+
     return re.sub(r"[^a-zA-Z0-9]", "", table_name.title())
 
 
@@ -48,6 +51,15 @@ def normalize_col_name(col_name, used_column_names, is_relation):
     """
     field_params = {}
     field_notes = []
+
+    if col_name is None:
+        raise ValueError("Column name cannot be None")
+
+    if not isinstance(col_name, str):
+        raise TypeError(f"Column name must be string, got {type(col_name).__name__}")
+
+    if len(col_name) == 0:
+        raise ValueError("Column name cannot be empty")
 
     new_name = col_name.lower()
     if new_name != col_name:
@@ -115,6 +127,12 @@ def get_field_type(connection, table_name, row):
     except KeyError:
         field_type = "TextField"
         field_notes.append("This field type is a guess.")
+
+    if field_type is None:
+        return "string"
+
+    if not isinstance(field_type, str):
+        field_type = str(field_type)
 
     # Add max_length for all CharFields.
     if field_type == "CharField" and row.display_size:
@@ -344,6 +362,7 @@ class DatabaseScanner:
             "p",  # Partitions
             "v",  # Views
         }
+
         table_info = self.__db.introspection.get_table_list(self.__cursor)
         table_info = {info.name: info for info in table_info if info.type in types}
 
